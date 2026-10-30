@@ -91,12 +91,16 @@ jobs:
   apple:
     name: ${{ matrix.platform }} unsigned release
     needs: verify
-    runs-on: macos-14
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        platform: [ios, macos]
+        include:
+          - platform: ios
+            runner: macos-14
+          - platform: macos
+            runner: macos-15-intel
     defaults:
       run:
         working-directory: client
@@ -119,10 +123,14 @@ jobs:
       - name: Build and package macOS
         if: matrix.platform == 'macos'
         run: |
-          printf 'CODE_SIGNING_ALLOWED = NO\nCODE_SIGNING_REQUIRED = NO\n' > "$RUNNER_TEMP/unsigned.xcconfig"
-          XCODE_XCCONFIG_FILE="$RUNNER_TEMP/unsigned.xcconfig" flutter build macos --release
+          printf 'CODE_SIGNING_ALLOWED = NO\nCODE_SIGNING_REQUIRED = NO\nARCHS = x86_64 arm64\nONLY_ACTIVE_ARCH = NO\n' > "$RUNNER_TEMP/unsigned.xcconfig"
+          XCODE_XCCONFIG_FILE="$RUNNER_TEMP/unsigned.xcconfig" bash ../scripts/ci-build.sh flutter build macos --release
+          app='build/macos/Build/Products/Release/Six Tick.app'
+          bash ../scripts/ci-build.sh python3 ../scripts/check_macos_compatibility.py "$app"
+          test "$(uname -m)" = x86_64
+          bash ../scripts/ci-build.sh swift ../scripts/check_macos_launch.swift "$app"
           mkdir -p build/artifacts
-          ditto -c -k --sequesterRsrc --keepParent 'build/macos/Build/Products/Release/Six Tick.app' build/artifacts/six-tick-macos-unsigned.zip
+          ditto -c -k --sequesterRsrc --keepParent "$app" build/artifacts/six-tick-macos-unsigned.zip
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: six-tick-${{ matrix.platform }}-release-unsigned

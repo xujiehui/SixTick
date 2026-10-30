@@ -54,7 +54,7 @@ flutter run -d <device> --dart-define=SYNC_URL=https://your-sync.example.com
 | iOS | 17 | macOS、Xcode、CocoaPods、Apple 签名配置 |
 | Android | 10 / API 29 | Java 17、Android SDK，发布时配置签名 |
 | Windows | 11 | Windows、Visual Studio C++ Desktop 工具链 |
-| macOS | 14 | macOS、Xcode、CocoaPods；分发需签名与公证 |
+| macOS | 12（Monterey） | Intel / Apple Silicon 通用应用；构建需 macOS、Xcode、CocoaPods；分发需签名与公证 |
 
 ```bash
 flutter build apk --debug
