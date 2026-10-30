@@ -72,9 +72,9 @@ jobs:
           cache: true
       - run: flutter pub get --enforce-lockfile
       - name: Build installable debug APK
-        run: flutter build apk --debug
+        run: bash ../scripts/ci-build.sh flutter build apk --debug
       - name: Build unsigned release bundle
-        run: flutter build appbundle --release
+        run: bash ../scripts/ci-build.sh flutter build appbundle --release
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: six-tick-android-debug-apk
