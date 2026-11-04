@@ -120,3 +120,5 @@ flutter test --dart-define=ALLOW_INSECURE_LOCALHOST=true --reporter expanded
 - [安全边界与评审清单](docs/SECURITY.md)
 - [部署与运行手册](docs/DEPLOYMENT.md)
 - [交付与验收状态](docs/ACCEPTANCE.md)
+
+- [UI 设计规范、应用图标与页面预览](docs/design/README.md)

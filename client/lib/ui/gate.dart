@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../services/controller.dart';
 import 'common.dart';
+import 'design.dart';
 
 class GateScreen extends StatefulWidget {
   final AppController app;
@@ -15,7 +16,10 @@ class _GateScreenState extends State<GateScreen> {
   bool configuring = false,
       busy = false,
       systemAvailable = false,
-      useSystem = false;
+      useSystem = false,
+      biometricAvailable = false,
+      biometricEnabled = false,
+      useBiometric = false;
   String? method, error;
   int failures = 0;
   DateTime? retryAt;
@@ -30,11 +34,18 @@ class _GateScreenState extends State<GateScreen> {
     try {
       final supported = await app.store.systemAvailable();
       final saved = app.exists ? await app.store.unlockMethod() : null;
+      final enrolled =
+          saved == 'password' && await app.store.hasBiometricUnlock();
+      final biometrics =
+          saved == 'password' && await app.store.biometricAvailable();
       if (mounted) {
         setState(() {
           systemAvailable = supported;
           useSystem = supported;
           method = saved;
+          biometricEnabled = enrolled;
+          biometricAvailable = biometrics;
+          useBiometric = enrolled && biometrics;
         });
       }
     } catch (e) {
@@ -43,7 +54,8 @@ class _GateScreenState extends State<GateScreen> {
   }
 
   Future<void> submit() async {
-    if (retryAt != null && DateTime.now().isBefore(retryAt!)) {
+    if (busy) return;
+    if (!useBiometric && retryAt != null && DateTime.now().isBefore(retryAt!)) {
       setState(
         () => error = tr(app, '请稍等片刻再试。', 'Please wait before trying again.'),
       );
@@ -55,7 +67,12 @@ class _GateScreenState extends State<GateScreen> {
     });
     try {
       if (app.exists) {
-        await app.unlock(password: method == 'password' ? password.text : null);
+        await app.unlock(
+          password: method == 'password' && !useBiometric
+              ? password.text
+              : null,
+          biometric: useBiometric,
+        );
       } else {
         if (!useSystem && password.text != repeat.text) {
           setState(
@@ -66,11 +83,17 @@ class _GateScreenState extends State<GateScreen> {
         await app.create(password: useSystem ? null : password.text);
       }
     } catch (e) {
-      failures++;
-      if (failures >= 5) {
+      if (!useBiometric) failures++;
+      if (!useBiometric && failures >= 5) {
         retryAt = DateTime.now().add(const Duration(seconds: 30));
       }
-      if (mounted) setState(() => error = errorText(app, e));
+      if (mounted) {
+        setState(() {
+          error = errorText(app, e);
+          // Cancellation, lockout and changed fingerprints always leave a password route.
+          useBiometric = false;
+        });
+      }
     } finally {
       if (mounted) setState(() => busy = false);
     }
@@ -101,21 +124,7 @@ class _GateScreenState extends State<GateScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Center(
-                    child: Container(
-                      width: 78,
-                      height: 78,
-                      decoration: BoxDecoration(
-                        color: cs.primary,
-                        borderRadius: BorderRadius.circular(24),
-                      ),
-                      child: Icon(
-                        Icons.shield_outlined,
-                        size: 42,
-                        color: cs.onPrimary,
-                      ),
-                    ),
-                  ),
+                  const Center(child: BrandMark(size: 88)),
                   const SizedBox(height: 24),
                   Text(
                     'Six Tick',
@@ -148,7 +157,7 @@ class _GateScreenState extends State<GateScreen> {
                     FilledButton.icon(
                       onPressed: () => setup(0),
                       icon: const Icon(Icons.arrow_forward),
-                      label: Text(tr(app, '开始使用', 'Get started')),
+                      label: Text(tr(app, '创建本机仓库', 'Create local vault')),
                     ),
                     const SizedBox(height: 12),
                     OutlinedButton.icon(
@@ -191,19 +200,49 @@ class _GateScreenState extends State<GateScreen> {
                             ? null
                             : (value) => setState(() => useSystem = value),
                       ),
-                    if (app.exists ? method == 'password' : !useSystem) ...[
+                    if (app.exists && useBiometric) ...[
+                      const SizedBox(height: 24),
+                      Icon(Icons.fingerprint, size: 48, color: cs.primary),
+                      const SizedBox(height: 12),
+                      Text(
+                        tr(
+                          app,
+                          '使用 Touch ID 安全解锁',
+                          'Unlock securely with Touch ID',
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                    ],
+                    if (app.exists
+                        ? method == 'password' && !useBiometric
+                        : !useSystem) ...[
                       const SizedBox(height: 16),
                       TextField(
                         controller: password,
                         obscureText: true,
                         autocorrect: false,
                         enableSuggestions: false,
-                        onSubmitted: (_) => submit(),
+                        onSubmitted: (_) {
+                          if (!busy) submit();
+                        },
                         decoration: InputDecoration(
                           labelText: tr(app, '本机解锁密码', 'Local unlock password'),
                           helperText: app.exists
-                              ? null
+                              ? (biometricEnabled
+                                    ? tr(
+                                        app,
+                                        'Touch ID 不可用时，可使用原本机密码。',
+                                        'Your local password works when Touch ID is unavailable.',
+                                      )
+                                    : biometricAvailable
+                                    ? tr(
+                                        app,
+                                        '解锁后可在“安全与备份”启用 Touch ID。',
+                                        'Enable Touch ID in Security & backup after unlocking.',
+                                      )
+                                    : null)
                               : tr(app, '至少 12 个字符', 'At least 12 characters'),
+                          helperMaxLines: 3,
                         ),
                       ),
                       if (!app.exists) ...[
@@ -213,7 +252,9 @@ class _GateScreenState extends State<GateScreen> {
                           obscureText: true,
                           autocorrect: false,
                           enableSuggestions: false,
-                          onSubmitted: (_) => submit(),
+                          onSubmitted: (_) {
+                            if (!busy) submit();
+                          },
                           decoration: InputDecoration(
                             labelText: tr(app, '再次输入密码', 'Repeat password'),
                           ),
@@ -231,13 +272,37 @@ class _GateScreenState extends State<GateScreen> {
                               height: 18,
                               child: CircularProgressIndicator(strokeWidth: 2),
                             )
-                          : const Icon(Icons.lock_open),
+                          : Icon(
+                              useBiometric
+                                  ? Icons.fingerprint
+                                  : Icons.lock_open,
+                            ),
                       label: Text(
                         app.exists
-                            ? tr(app, '解锁', 'Unlock')
+                            ? (useBiometric
+                                  ? tr(
+                                      app,
+                                      '使用 Touch ID 解锁',
+                                      'Unlock with Touch ID',
+                                    )
+                                  : tr(app, '解锁', 'Unlock'))
                             : tr(app, '创建本地仓库', 'Create local vault'),
                       ),
                     ),
+                    if (app.exists && biometricEnabled && biometricAvailable)
+                      TextButton(
+                        onPressed: busy
+                            ? null
+                            : () => setState(() {
+                                useBiometric = !useBiometric;
+                                error = null;
+                              }),
+                        child: Text(
+                          useBiometric
+                              ? tr(app, '使用本机密码', 'Use local password')
+                              : tr(app, '使用 Touch ID', 'Use Touch ID'),
+                        ),
+                      ),
                     if (!app.exists)
                       TextButton(
                         onPressed: busy
@@ -249,7 +314,11 @@ class _GateScreenState extends State<GateScreen> {
                   if (error != null)
                     Padding(
                       padding: const EdgeInsets.only(top: 16),
-                      child: Text(error!, style: TextStyle(color: cs.error)),
+                      child: StatusNotice(
+                        text: error!,
+                        tone: NoticeTone.error,
+                        icon: Icons.error_outline,
+                      ),
                     ),
                   const SizedBox(height: 32),
                   Row(
@@ -257,13 +326,15 @@ class _GateScreenState extends State<GateScreen> {
                     children: [
                       const Icon(Icons.wifi_off, size: 15),
                       const SizedBox(width: 8),
-                      Text(
-                        tr(
-                          app,
-                          '离线优先 · 本地加密 · 无广告',
-                          'Offline first · Encrypted · No ads',
+                      Flexible(
+                        child: Text(
+                          tr(
+                            app,
+                            '离线优先 · 本地加密 · 无广告',
+                            'Offline first · Encrypted · No ads',
+                          ),
+                          style: Theme.of(context).textTheme.bodySmall,
                         ),
-                        style: Theme.of(context).textTheme.bodySmall,
                       ),
                     ],
                   ),

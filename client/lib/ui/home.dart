@@ -9,12 +9,23 @@ import '../services/controller.dart';
 import 'add_account.dart';
 import 'cloud_page.dart';
 import 'common.dart';
+import 'design.dart';
+import 'account_card.dart';
+import 'account_order.dart';
 import 'security_page.dart';
 
 class HomeScreen extends StatefulWidget {
   final AppController app;
   final int initialPage;
-  const HomeScreen({super.key, required this.app, this.initialPage = 0});
+
+  /// Optional clock for deterministic rendering and rollover tests.
+  final int Function()? epochSeconds;
+  const HomeScreen({
+    super.key,
+    required this.app,
+    this.initialPage = 0,
+    this.epochSeconds,
+  });
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
@@ -23,8 +34,14 @@ class _HomeScreenState extends State<HomeScreen> {
   final search = TextEditingController(),
       searchFocus = FocusNode(),
       listFocus = FocusNode();
-  final now = ValueNotifier<int>(DateTime.now().millisecondsSinceEpoch ~/ 1000);
-  Timer? clock;
+  late final ValueNotifier<int> now;
+  int get currentSeconds =>
+      widget.epochSeconds?.call() ??
+      DateTime.now().millisecondsSinceEpoch ~/ 1000;
+  Timer? clock, copiedTimer;
+  String? copiedId;
+  bool keyboardSelection = false;
+  final entryKeys = <String, GlobalKey>{};
   int page = 0, selected = 0;
   String filter = 'all';
   AppController get app => widget.app;
@@ -33,9 +50,10 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     page = widget.initialPage;
+    now = ValueNotifier<int>(currentSeconds);
     clock = Timer.periodic(
       const Duration(milliseconds: 200),
-      (_) => now.value = DateTime.now().millisecondsSinceEpoch ~/ 1000,
+      (_) => now.value = currentSeconds,
     );
     search.addListener(() {
       if (mounted) setState(() => selected = 0);
@@ -45,6 +63,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     clock?.cancel();
+    copiedTimer?.cancel();
     now.dispose();
     search.dispose();
     searchFocus.dispose();
@@ -62,29 +81,18 @@ class _HomeScreenState extends State<HomeScreen> {
 
   List<RecordView> get visible {
     final query = search.text.trim().toLowerCase();
-    final entries = app.document!.entries.where((entry) {
+    return ordered.where((entry) {
       final otp = entry.otp;
-      return (filter == 'all' ||
-              filter == 'favorites' && entry.fields['favorite'] == true ||
-              entry.fields['group'] == filter) &&
-          ('${otp.issuer} ${otp.account}').toLowerCase().contains(query);
+      return (activeFilter == 'all' ||
+              activeFilter == 'favorites' && entry.fields['favorite'] == true ||
+              entry.fields['group'] == activeFilter) &&
+          '${otp.issuer} ${otp.account}'.toLowerCase().contains(query);
     }).toList();
-    entries.sort((a, b) {
-      final fav =
-          (b.fields['favorite'] == true ? 1 : 0) -
-          (a.fields['favorite'] == true ? 1 : 0);
-      return fav != 0
-          ? fav
-          : a.otp.issuer.toLowerCase().compareTo(b.otp.issuer.toLowerCase());
-    });
-    return entries;
   }
 
   Future<void> copy(RecordView entry) async {
     if (app.locked || app.privacyHidden) return;
-    final code = entry.otp.codeAt(
-      DateTime.now().millisecondsSinceEpoch ~/ 1000,
-    );
+    final code = entry.otp.codeAt(currentSeconds);
     final clear = app.settings['clearClipboard'] == true;
     if (Platform.isAndroid || Platform.isIOS) {
       await const MethodChannel(
@@ -105,12 +113,11 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
     if (mounted && !app.locked) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          duration: const Duration(seconds: 1),
-          content: Text(t('验证码已复制', 'Code copied')),
-        ),
-      );
+      copiedTimer?.cancel();
+      setState(() => copiedId = entry.id);
+      copiedTimer = Timer(const Duration(seconds: 2), () {
+        if (mounted) setState(() => copiedId = null);
+      });
     }
   }
 
@@ -124,7 +131,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final result = await showDialog<Map<String, dynamic>>(
       context: context,
       builder: (context) => StatefulBuilder(
-        builder: (context, state) => AlertDialog(
+        builder: (context, state) => AppDialog(
           title: Text(t('编辑账号', 'Edit account')),
           content: SizedBox(
             width: 420,
@@ -137,15 +144,16 @@ class _HomeScreenState extends State<HomeScreen> {
                     labelText: t('服务名称', 'Service name'),
                   ),
                 ),
-                const SizedBox(height: 14),
+                const SizedBox(height: 16),
                 TextField(
                   controller: account,
                   decoration: InputDecoration(
                     labelText: t('账号标识', 'Account label'),
                   ),
                 ),
-                const SizedBox(height: 14),
+                const SizedBox(height: 16),
                 DropdownButtonFormField<String>(
+                  isExpanded: true,
                   initialValue: group,
                   decoration: InputDecoration(labelText: t('分组', 'Group')),
                   items: [
@@ -162,7 +170,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ],
                   onChanged: (v) => state(() => group = v),
                 ),
-                const SizedBox(height: 14),
+                const SizedBox(height: 16),
                 Text(
                   t(
                     '密钥与生成参数无法直接修改。更换密钥请重新添加账号。',
@@ -216,7 +224,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     await showDialog<void>(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (context) => AppDialog(
         title: Text(entry.otp.issuer),
         content: SizedBox(
           width: 320,
@@ -288,22 +296,24 @@ class _HomeScreenState extends State<HomeScreen> {
     final choice = await showModalBottomSheet<String>(
       context: context,
       builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.create_new_folder_outlined),
-              title: Text(t('新建分组', 'New group')),
-              onTap: () => Navigator.pop(context, 'new'),
-            ),
-            ...app.document!.groups.map(
-              (g) => ListTile(
-                title: Text(g.fields['name'] as String),
-                trailing: const Icon(Icons.edit_outlined),
-                onTap: () => Navigator.pop(context, g.id),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.create_new_folder_outlined),
+                title: Text(t('新建分组', 'New group')),
+                onTap: () => Navigator.pop(context, 'new'),
               ),
-            ),
-          ],
+              ...app.document!.groups.map(
+                (g) => ListTile(
+                  title: Text(g.fields['name'] as String),
+                  trailing: const Icon(Icons.edit_outlined),
+                  onTap: () => Navigator.pop(context, g.id),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -380,404 +390,647 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Widget entryTile(RecordView entry, int index) {
-    final otp = entry.otp, cs = Theme.of(context).colorScheme;
-    return Card(
-      margin: const EdgeInsets.only(bottom: 12),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(20),
-        onTap: () {
-          setState(() => selected = index);
-          listFocus.requestFocus();
-          run(() => edit(entry));
-        },
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
-          child: Row(
-            children: [
-              Container(
-                width: 46,
-                height: 46,
-                alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  color: cs.primaryContainer,
-                  borderRadius: BorderRadius.circular(14),
+  Widget entryTile(RecordView entry, int index) => Padding(
+    padding: const EdgeInsets.only(bottom: 8),
+    child: AccountCard(
+      key: entryKeys.putIfAbsent(entry.id, () => GlobalKey()),
+      entry: entry,
+      now: now,
+      copied: copiedId == entry.id,
+      t: t,
+      onCopy: () {
+        setState(() {
+          selected = index;
+          keyboardSelection = false;
+        });
+        listFocus.requestFocus();
+        run(() => copy(entry));
+      },
+      onFavorite: () => run(
+        () => app.edit(entry, {'favorite': entry.fields['favorite'] != true}),
+      ),
+      onConflict: () => run(() => resolve(entry)),
+      onAction: (value) => run(() => menu(entry, value)),
+    ),
+  );
+
+  Future<void> addAccount() async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => SafeArea(
+        child: SingleChildScrollView(
+          child: Padding(
+            padding: EdgeInsets.fromLTRB(
+              MediaQuery.sizeOf(context).width < 600 ? 16 : 32,
+              0,
+              MediaQuery.sizeOf(context).width < 600 ? 16 : 32,
+              24,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  t('添加账号', 'Add account'),
+                  style: Theme.of(context).textTheme.titleLarge,
                 ),
-                child: Text(
-                  otp.issuer.characters.first.toUpperCase(),
-                  style: TextStyle(
-                    color: cs.onPrimaryContainer,
-                    fontSize: 22,
-                    fontWeight: FontWeight.w600,
+                const SizedBox(height: 16),
+                if (Platform.isIOS || Platform.isAndroid)
+                  ListTile(
+                    leading: const Icon(Icons.qr_code_scanner),
+                    title: Text(t('扫描二维码', 'Scan QR code')),
+                    onTap: () => Navigator.pop(context, 'scan'),
                   ),
+                ListTile(
+                  leading: const Icon(Icons.image_outlined),
+                  title: Text(t('导入二维码图片', 'Import QR image')),
+                  onTap: () => Navigator.pop(context, 'image'),
                 ),
-              ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Flexible(
-                          child: Text(
-                            otp.issuer,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: Theme.of(context).textTheme.titleMedium,
-                          ),
-                        ),
-                        if (entry.conflicts.isNotEmpty)
-                          IconButton(
-                            icon: Icon(
-                              Icons.warning_amber_rounded,
-                              color: cs.error,
-                            ),
-                            tooltip: t('处理同步冲突', 'Resolve sync conflict'),
-                            onPressed: () => run(() => resolve(entry)),
-                          ),
-                      ],
-                    ),
-                    if (otp.account.isNotEmpty)
-                      Text(
-                        otp.account,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: cs.onSurfaceVariant,
-                          fontSize: 12,
-                        ),
-                      ),
-                    const SizedBox(height: 12),
-                    ValueListenableBuilder<int>(
-                      valueListenable: now,
-                      builder: (context, seconds, _) {
-                        final code = otp.codeAt(seconds),
-                            split = otp.digits ~/ 2,
-                            left = otp.remaining(seconds);
-                        return Wrap(
-                          crossAxisAlignment: WrapCrossAlignment.center,
-                          spacing: 12,
-                          runSpacing: 6,
-                          children: [
-                            Semantics(
-                              label:
-                                  '${t('验证码', 'Code')} ${code.split('').join(' ')}',
-                              excludeSemantics: true,
-                              child: Text(
-                                '${code.substring(0, split)} ${code.substring(split)}',
-                                style: TextStyle(
-                                  fontSize: 29,
-                                  fontWeight: FontWeight.w500,
-                                  fontFamily: 'monospace',
-                                  fontFeatures: const [
-                                    FontFeature.tabularFigures(),
-                                  ],
-                                  color: left <= 5 ? cs.error : cs.primary,
-                                  letterSpacing: 1.5,
-                                ),
-                              ),
-                            ),
-                            ExcludeSemantics(
-                              child: SizedBox(
-                                width: 25,
-                                height: 25,
-                                child: Stack(
-                                  alignment: Alignment.center,
-                                  children: [
-                                    CircularProgressIndicator(
-                                      value: left / otp.period,
-                                      strokeWidth: 2,
-                                      color: left <= 5
-                                          ? cs.error
-                                          : cs.primary.withValues(alpha: .6),
-                                      backgroundColor:
-                                          cs.surfaceContainerHighest,
-                                    ),
-                                    Text(
-                                      '$left',
-                                      style: const TextStyle(fontSize: 9),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                            if (left <= 5)
-                              Text(
-                                t('即将更新', 'Refreshing soon'),
-                                style: TextStyle(fontSize: 11, color: cs.error),
-                              ),
-                          ],
-                        );
-                      },
-                    ),
-                  ],
+                ListTile(
+                  leading: const Icon(Icons.key_outlined),
+                  title: Text(t('手动输入 / 链接', 'Secret / URI')),
+                  onTap: () => Navigator.pop(context, 'manual'),
                 ),
-              ),
-              Column(
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    if (!mounted || app.locked) return;
+    if (action == 'manual') {
+      await showDialog<void>(
+        context: context,
+        builder: (_) => AddAccountDialog(app: app),
+      );
+    } else if (action == 'image') {
+      await importQr(context, app);
+    } else if (action == 'scan') {
+      await scanQr(context, app);
+    }
+  }
+
+  String get sortMode => app.settings['accountSort'] as String? ?? 'custom';
+  List<String> get savedOrder => (app.settings['accountOrder'] as List? ?? [])
+      .whereType<String>()
+      .toList();
+  List<RecordView> get ordered =>
+      orderAccounts(app.document!.entries, sortMode, savedOrder);
+  String get activeFilter =>
+      filter == 'all' ||
+          filter == 'favorites' ||
+          app.document!.groups.any((g) => g.id == filter)
+      ? filter
+      : 'all';
+  void selectFilter(String value) => setState(() {
+    page = 0;
+    filter = value;
+    selected = 0;
+  });
+  String get sortLabel => switch (sortMode) {
+    'name' => t('名称排序', 'By name'),
+    'favorites' => t('收藏优先', 'Favorites first'),
+    _ => t('自定义排序', 'Custom order'),
+  };
+
+  Future<void> chooseSort(String mode) async {
+    if (mode == 'custom') {
+      final entries = orderAccounts(
+        app.document!.entries,
+        'custom',
+        savedOrder,
+      );
+      final result = await showDialog<List<String>>(
+        context: context,
+        builder: (context) => StatefulBuilder(
+          builder: (context, update) => AppDialog(
+            title: Text(t('自定义排序', 'Custom order')),
+            content: SizedBox(
+              width: 480,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  IconButton(
-                    tooltip: t('复制验证码', 'Copy code'),
-                    onPressed: () => run(() => copy(entry)),
-                    icon: const Icon(Icons.copy_rounded, size: 20),
+                  Text(
+                    t(
+                      '拖动账号或使用箭头调整顺序，仅保存在这台设备。',
+                      'Drag accounts or use the arrows to reorder. Saved on this device.',
+                    ),
                   ),
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      IconButton(
-                        visualDensity: VisualDensity.compact,
-                        tooltip: t('收藏 / 取消收藏', 'Toggle favorite'),
-                        onPressed: () => run(
-                          () => app.edit(entry, {
-                            'favorite': entry.fields['favorite'] != true,
-                          }),
-                        ),
-                        icon: Icon(
-                          entry.fields['favorite'] == true
-                              ? Icons.star_rounded
-                              : Icons.star_outline_rounded,
-                          size: 20,
-                          color: cs.primary,
-                        ),
-                      ),
-                      PopupMenuButton<String>(
-                        tooltip: t('更多操作', 'More actions'),
-                        onSelected: (value) => run(() => menu(entry, value)),
-                        itemBuilder: (_) => [
-                          PopupMenuItem(
-                            value: 'edit',
-                            child: Text(t('账号详情 / 编辑', 'Details / edit')),
-                          ),
-                          if (entry.conflicts.isNotEmpty)
-                            PopupMenuItem(
-                              value: 'resolve',
-                              child: Text(t('解决冲突', 'Resolve conflict')),
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    height: MediaQuery.sizeOf(context).height * .4,
+                    child: ReorderableListView.builder(
+                      buildDefaultDragHandles: false,
+                      itemCount: entries.length,
+                      onReorder: (oldIndex, newIndex) => update(() {
+                        if (newIndex > oldIndex) newIndex--;
+                        entries.insert(newIndex, entries.removeAt(oldIndex));
+                      }),
+                      itemBuilder: (context, index) => Padding(
+                        key: ValueKey(entries[index].id),
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Row(
+                          children: [
+                            ReorderableDragStartListener(
+                              index: index,
+                              child: const Padding(
+                                padding: EdgeInsets.all(12),
+                                child: Icon(Icons.drag_handle),
+                              ),
                             ),
-                          PopupMenuItem(
-                            value: 'migrate',
-                            child: Text(t('迁移账号', 'Transfer account')),
-                          ),
-                          PopupMenuItem(
-                            value: 'delete',
-                            child: Text(t('删除账号', 'Delete account')),
-                          ),
-                        ],
+                            Expanded(
+                              child: Text(
+                                entries[index].otp.issuer,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            IconButton(
+                              tooltip: t('上移', 'Move up'),
+                              onPressed: index == 0
+                                  ? null
+                                  : () => update(
+                                      () => entries.insert(
+                                        index - 1,
+                                        entries.removeAt(index),
+                                      ),
+                                    ),
+                              icon: const Icon(Icons.arrow_upward, size: 20),
+                            ),
+                            IconButton(
+                              tooltip: t('下移', 'Move down'),
+                              onPressed: index == entries.length - 1
+                                  ? null
+                                  : () => update(
+                                      () => entries.insert(
+                                        index + 1,
+                                        entries.removeAt(index),
+                                      ),
+                                    ),
+                              icon: const Icon(Icons.arrow_downward, size: 20),
+                            ),
+                          ],
+                        ),
                       ),
-                    ],
+                    ),
                   ),
                 ],
               ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: Text(t('取消', 'Cancel')),
+              ),
+              FilledButton(
+                onPressed: () =>
+                    Navigator.pop(context, entries.map((e) => e.id).toList()),
+                child: Text(t('保存排序', 'Save order')),
+              ),
             ],
           ),
+        ),
+      );
+      if (result == null || app.locked) return;
+      await app.preferences({'accountSort': 'custom', 'accountOrder': result});
+    } else {
+      await app.preferences({'accountSort': mode});
+    }
+    if (mounted && !app.locked) setState(() => selected = 0);
+  }
+
+  Widget sortControl({bool compact = false}) => PopupMenuButton<String>(
+    tooltip: t('账号排序', 'Sort accounts'),
+    onSelected: (value) => run(() => chooseSort(value)),
+    itemBuilder: (_) => [
+      for (final mode in ['custom', 'name', 'favorites'])
+        CheckedPopupMenuItem(
+          value: mode,
+          checked: sortMode == mode,
+          child: Text(switch (mode) {
+            'custom' => t('自定义排序', 'Custom order'),
+            'name' => t('名称排序', 'By name'),
+            _ => t('收藏优先', 'Favorites first'),
+          }),
+        ),
+    ],
+    child: compact
+        ? const SizedBox.square(
+            dimension: 48,
+            child: Icon(Icons.sort, size: 20),
+          )
+        : Container(
+            constraints: const BoxConstraints(minHeight: 48),
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            decoration: BoxDecoration(
+              border: Border.all(
+                color: Theme.of(context).colorScheme.outlineVariant,
+              ),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.sort, size: 20),
+                const SizedBox(width: 8),
+                Text(sortLabel, style: Theme.of(context).textTheme.bodyMedium),
+                const SizedBox(width: 8),
+                const Icon(Icons.expand_more, size: 18),
+              ],
+            ),
+          ),
+  );
+
+  Widget filterChip(String id, String label, IconData icon) {
+    final cs = Theme.of(context).colorScheme;
+    final selected = activeFilter == id;
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: ChoiceChip(
+        label: Text(label),
+        selected: selected,
+        showCheckmark: false,
+        avatar: Icon(
+          icon,
+          size: id == 'all' ? 10 : 18,
+          color: selected ? cs.primary : cs.onSurface,
+        ),
+        labelStyle: TextStyle(
+          fontSize: 13,
+          color: selected ? cs.primary : cs.onSurface,
+          fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+        ),
+        side: BorderSide.none,
+        backgroundColor: Theme.of(context).brightness == Brightness.dark
+            ? cs.surface
+            : const Color(0xfff7fbff),
+        onSelected: (_) => selectFilter(id),
+      ),
+    );
+  }
+
+  Widget emptyAccounts() {
+    final emptyVault = app.document!.entries.isEmpty;
+    final searching = search.text.trim().isNotEmpty;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const BrandMark(size: 64),
+            const SizedBox(height: 24),
+            Text(
+              searching
+                  ? t('没有找到匹配的账号', 'No matching accounts')
+                  : emptyVault
+                  ? t('添加你的第一个账号', 'Add your first account')
+                  : activeFilter == 'favorites'
+                  ? t('还没有收藏的账号', 'No favorites yet')
+                  : t('这个分组还没有账号', 'No accounts in this group'),
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
+            const SizedBox(height: 12),
+            Text(
+              searching
+                  ? t('试试其他服务名或账号。', 'Try another service or account name.')
+                  : emptyVault
+                  ? t(
+                      '从网站的两步验证设置中获取二维码或密钥。',
+                      'Find the QR code or secret in your website’s two-step verification settings.',
+                    )
+                  : activeFilter == 'favorites'
+                  ? t('在账号菜单中收藏常用账号。', 'Add favorites from an account’s menu.')
+                  : t(
+                      '在账号编辑中选择这个分组。',
+                      'Choose this group when editing an account.',
+                    ),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 24),
+            if (searching)
+              OutlinedButton(
+                onPressed: search.clear,
+                child: Text(t('清除搜索', 'Clear search')),
+              )
+            else if (emptyVault)
+              FilledButton.icon(
+                onPressed: () => run(addAccount),
+                icon: const Icon(Icons.add),
+                label: Text(t('添加账号', 'Add account')),
+              )
+            else
+              TextButton(
+                onPressed: () => selectFilter('all'),
+                child: Text(t('查看全部账号', 'View all accounts')),
+              ),
+          ],
         ),
       ),
     );
   }
 
-  Widget accounts() {
+  KeyEventResult accountKey(FocusNode _, KeyEvent event) {
+    final entries = visible;
+    if (!listFocus.hasPrimaryFocus ||
+        event is! KeyDownEvent ||
+        entries.isEmpty) {
+      return KeyEventResult.ignored;
+    }
+    if (event.logicalKey == LogicalKeyboardKey.arrowDown ||
+        event.logicalKey == LogicalKeyboardKey.arrowUp) {
+      keyboardSelection = true;
+      setState(
+        () => selected =
+            (selected +
+                    (event.logicalKey == LogicalKeyboardKey.arrowDown ? 1 : -1))
+                .clamp(0, entries.length - 1),
+      );
+      final id = entries[selected].id;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        final cardContext = entryKeys[id]?.currentContext;
+        if (cardContext != null) {
+          Scrollable.ensureVisible(
+            cardContext,
+            duration: MediaQuery.disableAnimationsOf(context)
+                ? Duration.zero
+                : const Duration(milliseconds: 180),
+            alignmentPolicy: ScrollPositionAlignmentPolicy.keepVisibleAtEnd,
+          );
+        }
+      });
+      return KeyEventResult.handled;
+    }
+    if (event.logicalKey == LogicalKeyboardKey.enter) {
+      run(() => copy(entries[selected.clamp(0, entries.length - 1)]));
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
+  Widget accounts(bool wide) {
     final entries = visible, cs = Theme.of(context).colorScheme;
+    final padding = wide ? 32.0 : 16.0;
+    final title = activeFilter == 'all'
+        ? t('验证码', 'Codes')
+        : activeFilter == 'favorites'
+        ? t('收藏', 'Favorites')
+        : app.document!.groups
+                  .firstWhere((g) => g.id == activeFilter)
+                  .fields['name']
+              as String;
     return DropTarget(
       onDragDone: (details) {
         if (details.files.isNotEmpty) {
           run(() => importQr(context, app, file: details.files.first));
         }
       },
-      child: Padding(
-        padding: EdgeInsets.all(
-          MediaQuery.sizeOf(context).width < 600 ? 18 : 32,
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        t('验证码', 'Your codes'),
-                        style: Theme.of(context).textTheme.headlineLarge,
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        t('随时可用，即使没有网络。', 'Ready when you are. Even offline.'),
-                        style: TextStyle(color: cs.onSurfaceVariant),
-                      ),
-                    ],
-                  ),
-                ),
-                PopupMenuButton<String>(
-                  tooltip: t('添加账号', 'Add account'),
-                  onSelected: (value) => run(() async {
-                    if (value == 'manual') {
-                      await showDialog<void>(
-                        context: context,
-                        builder: (_) => AddAccountDialog(app: app),
-                      );
-                    }
-                    if (value == 'image' && mounted) {
-                      await importQr(context, app);
-                    }
-                    if (value == 'scan' && mounted) await scanQr(context, app);
-                  }),
-                  itemBuilder: (_) => [
-                    if (Platform.isIOS || Platform.isAndroid)
-                      PopupMenuItem(
-                        value: 'scan',
-                        child: Text(t('扫描二维码', 'Scan QR code')),
-                      ),
-                    PopupMenuItem(
-                      value: 'image',
-                      child: Text(t('导入二维码图片', 'Import QR image')),
-                    ),
-                    PopupMenuItem(
-                      value: 'manual',
-                      child: Text(t('手动输入 / 链接', 'Secret / URI')),
-                    ),
-                  ],
-                  child: Container(
-                    padding: const EdgeInsets.all(14),
-                    decoration: BoxDecoration(
-                      color: cs.primary,
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    child: Icon(Icons.add, color: cs.onPrimary),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 24),
-            TextField(
-              controller: search,
-              focusNode: searchFocus,
-              decoration: InputDecoration(
-                hintText: t('搜索服务或账号', 'Search services or accounts'),
-                prefixIcon: const Icon(Icons.search),
-                suffixIcon: search.text.isNotEmpty
-                    ? IconButton(
-                        onPressed: search.clear,
-                        icon: const Icon(Icons.close),
-                      )
-                    : null,
-              ),
-            ),
-            const SizedBox(height: 16),
-            SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(
-                children: [
-                  ChoiceChip(
-                    label: Text(
-                      '${t('全部', 'All')} ${app.document!.entries.length}',
-                    ),
-                    selected: filter == 'all',
-                    onSelected: (_) => setState(() => filter = 'all'),
-                  ),
-                  const SizedBox(width: 8),
-                  ChoiceChip(
-                    label: Text(t('收藏', 'Favorites')),
-                    selected: filter == 'favorites',
-                    onSelected: (_) => setState(() => filter = 'favorites'),
-                  ),
-                  ...app.document!.groups.map(
-                    (g) => Padding(
-                      padding: const EdgeInsets.only(left: 8),
-                      child: ChoiceChip(
-                        label: Text(g.fields['name'] as String),
-                        selected: filter == g.id,
-                        onSelected: (_) => setState(() => filter = g.id),
-                      ),
-                    ),
-                  ),
-                  IconButton(
-                    tooltip: t('管理分组', 'Manage groups'),
-                    onPressed: () => run(groupMenu),
-                    icon: const Icon(Icons.folder_open_outlined),
-                  ),
-                ],
-              ),
-            ),
-            if (app.document!.conflictCount > 0)
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Text(
-                  t(
-                    '有并发修改需要确认，所有版本均已保留。',
-                    'Concurrent edits need your review. Every version is preserved.',
-                  ),
-                  style: TextStyle(color: cs.error),
-                ),
-              ),
-            const SizedBox(height: 16),
-            Expanded(
-              child: entries.isEmpty
-                  ? Center(
+      child: Column(
+        children: [
+          Expanded(
+            child: Focus(
+              focusNode: listFocus,
+              onFocusChange: (_) => setState(() {}),
+              onKeyEvent: accountKey,
+              child: CustomScrollView(
+                slivers: [
+                  SliverPadding(
+                    padding: EdgeInsets.fromLTRB(padding, 24, padding, 0),
+                    sliver: SliverToBoxAdapter(
                       child: Column(
-                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Icon(
-                            search.text.isEmpty
-                                ? Icons.key_outlined
-                                : Icons.search_off,
-                            size: 58,
-                            color: cs.primary,
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.center,
+                            children: [
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        Flexible(
+                                          child: Text(
+                                            title,
+                                            style: wide
+                                                ? Theme.of(
+                                                    context,
+                                                  ).textTheme.headlineLarge
+                                                : Theme.of(
+                                                    context,
+                                                  ).textTheme.headlineSmall,
+                                            maxLines: 2,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ),
+                                        if (!wide) ...[
+                                          const SizedBox(width: 10),
+                                          Container(
+                                            padding: const EdgeInsets.symmetric(
+                                              horizontal: 10,
+                                              vertical: 5,
+                                            ),
+                                            decoration: BoxDecoration(
+                                              color: cs.primaryContainer,
+                                              borderRadius:
+                                                  BorderRadius.circular(20),
+                                            ),
+                                            child: Text(
+                                              '${entries.length}',
+                                              style: const TextStyle(
+                                                fontSize: 14,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ],
+                                    ),
+                                    if (wide) ...[
+                                      const SizedBox(height: 6),
+                                      Text(
+                                        t(
+                                          '${entries.length} 个账户',
+                                          '${entries.length} accounts',
+                                        ),
+                                        style: TextStyle(
+                                          color: cs.onSurfaceVariant,
+                                        ),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              FilledButton.icon(
+                                onPressed: () => run(addAccount),
+                                icon: const Icon(Icons.add, size: 22),
+                                style: FilledButton.styleFrom(
+                                  padding: EdgeInsets.symmetric(
+                                    horizontal: wide ? 24 : 16,
+                                    vertical: 12,
+                                  ),
+                                ),
+                                label: Text(
+                                  wide
+                                      ? t('添加账户', 'Add account')
+                                      : t('添加', 'Add'),
+                                ),
+                              ),
+                            ],
                           ),
-                          const SizedBox(height: 18),
-                          Text(
-                            t(
-                              search.text.isEmpty ? '添加你的第一个账号' : '没有找到匹配的账号',
-                              search.text.isEmpty
-                                  ? 'Add your first account'
-                                  : 'No matching accounts',
+                          SizedBox(height: wide ? 32 : 16),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: TextField(
+                                  controller: search,
+                                  focusNode: searchFocus,
+                                  onSubmitted: (_) => listFocus.requestFocus(),
+                                  decoration: InputDecoration(
+                                    hintText: t(
+                                      '搜索服务或账户',
+                                      'Search services or accounts',
+                                    ),
+                                    prefixIcon: const Icon(
+                                      Icons.search,
+                                      size: 22,
+                                    ),
+                                    contentPadding: const EdgeInsets.symmetric(
+                                      horizontal: 16,
+                                      vertical: 12,
+                                    ),
+                                    fillColor: cs.surface,
+                                    suffixIcon: search.text.isEmpty
+                                        ? null
+                                        : IconButton(
+                                            tooltip: t('清除搜索', 'Clear search'),
+                                            onPressed: search.clear,
+                                            icon: const Icon(
+                                              Icons.close,
+                                              size: 18,
+                                            ),
+                                          ),
+                                  ),
+                                ),
+                              ),
+                              if (wide) ...[
+                                const SizedBox(width: 12),
+                                sortControl(),
+                              ],
+                            ],
+                          ),
+                          if (!wide) ...[
+                            const SizedBox(height: 12),
+                            SingleChildScrollView(
+                              scrollDirection: Axis.horizontal,
+                              child: Row(
+                                children: [
+                                  filterChip(
+                                    'all',
+                                    t(
+                                      '全部 ${app.document!.entries.length}',
+                                      'All ${app.document!.entries.length}',
+                                    ),
+                                    Icons.circle,
+                                  ),
+                                  filterChip(
+                                    'favorites',
+                                    t('收藏', 'Favorites'),
+                                    Icons.star_outline_rounded,
+                                  ),
+                                  ...app.document!.groups.map(
+                                    (g) => filterChip(
+                                      g.id,
+                                      g.fields['name'] as String,
+                                      ['个人', 'personal'].contains(
+                                            (g.fields['name'] as String)
+                                                .toLowerCase(),
+                                          )
+                                          ? Icons.person_outline
+                                          : Icons.folder_outlined,
+                                    ),
+                                  ),
+                                  sortControl(compact: true),
+                                  IconButton(
+                                    tooltip: t('管理分组', 'Manage groups'),
+                                    onPressed: () => run(groupMenu),
+                                    icon: const Icon(
+                                      Icons.create_new_folder_outlined,
+                                      size: 20,
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
-                            style: Theme.of(context).textTheme.titleLarge,
-                          ),
-                          const SizedBox(height: 10),
-                          Text(
-                            t(
-                              '从网站的两步验证设置中获取二维码或密钥。',
-                              'Find the QR code or secret in your website’s two-step verification settings.',
+                          ],
+                          if (app.document!.conflictCount > 0) ...[
+                            const SizedBox(height: 12),
+                            StatusNotice(
+                              text: t(
+                                '有并发修改需要确认，所有版本均已保留。',
+                                'Concurrent edits need your review. Every version is preserved.',
+                              ),
+                              icon: Icons.warning_amber_rounded,
+                              tone: NoticeTone.warning,
                             ),
-                            textAlign: TextAlign.center,
-                          ),
+                          ],
+                          SizedBox(height: wide ? 32 : 20),
+                          if (wide)
+                            LayoutBuilder(
+                              builder: (context, constraints) =>
+                                  AccountColumns.fits(
+                                    context,
+                                    constraints.maxWidth - 32,
+                                  )
+                                  ? Padding(
+                                      padding: const EdgeInsets.fromLTRB(
+                                        16,
+                                        0,
+                                        16,
+                                        12,
+                                      ),
+                                      child: DefaultTextStyle.merge(
+                                        style: TextStyle(
+                                          color: cs.onSurfaceVariant,
+                                          fontSize: 12,
+                                        ),
+                                        child: AccountColumns(
+                                          identity: Text(t('账户', 'Account')),
+                                          code: Text(t('验证码', 'Code')),
+                                          remaining: Text(
+                                            t('剩余时间', 'Time left'),
+                                          ),
+                                          copy: const SizedBox(),
+                                          menu: const SizedBox(),
+                                        ),
+                                      ),
+                                    )
+                                  : const SizedBox(),
+                            ),
                         ],
                       ),
+                    ),
+                  ),
+                  if (entries.isEmpty)
+                    SliverFillRemaining(
+                      hasScrollBody: false,
+                      child: emptyAccounts(),
                     )
-                  : Focus(
-                      focusNode: listFocus,
-                      onKeyEvent: (_, event) {
-                        if (event is! KeyDownEvent) {
-                          return KeyEventResult.ignored;
-                        }
-                        if (event.logicalKey == LogicalKeyboardKey.arrowDown ||
-                            event.logicalKey == LogicalKeyboardKey.arrowUp) {
-                          setState(
-                            () => selected =
-                                (selected +
-                                        (event.logicalKey ==
-                                                LogicalKeyboardKey.arrowDown
-                                            ? 1
-                                            : -1))
-                                    .clamp(0, entries.length - 1),
-                          );
-                          return KeyEventResult.handled;
-                        }
-                        if (event.logicalKey == LogicalKeyboardKey.enter) {
-                          run(
-                            () => copy(
-                              entries[selected.clamp(0, entries.length - 1)],
-                            ),
-                          );
-                          return KeyEventResult.handled;
-                        }
-                        return KeyEventResult.ignored;
-                      },
-                      child: ListView.builder(
+                  else
+                    SliverPadding(
+                      padding: EdgeInsets.fromLTRB(padding, 0, padding, 16),
+                      sliver: SliverList.builder(
                         itemCount: entries.length,
                         itemBuilder: (_, index) => DecoratedBox(
                           decoration: BoxDecoration(
-                            border: selected == index && listFocus.hasFocus
+                            border:
+                                selected == index &&
+                                    listFocus.hasPrimaryFocus &&
+                                    keyboardSelection
                                 ? Border(
                                     left: BorderSide(
                                       color: cs.primary,
@@ -790,22 +1043,217 @@ class _HomeScreenState extends State<HomeScreen> {
                         ),
                       ),
                     ),
+                ],
+              ),
             ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Icon(Icons.lock_outline, size: 13, color: cs.onSurfaceVariant),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    t('密钥在本机加密保存', 'Your secrets are encrypted on this device'),
-                    style: Theme.of(context).textTheme.bodySmall,
+          ),
+          if (wide)
+            Padding(
+              padding: EdgeInsets.fromLTRB(padding, 12, padding, 24),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.wifi_off_outlined,
+                    size: 20,
+                    color: cs.onSurfaceVariant,
                   ),
-                ),
-                Text('RFC 6238', style: Theme.of(context).textTheme.labelSmall),
-              ],
+                  const SizedBox(width: 12),
+                  Text(
+                    t('离线可用', 'Available offline'),
+                    style: TextStyle(color: cs.onSurfaceVariant),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget sidebar() {
+    final cs = Theme.of(context).colorScheme;
+    Widget destination(
+      String label,
+      IconData icon,
+      bool selected,
+      VoidCallback onTap,
+    ) => Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Material(
+        color: selected ? cs.primaryContainer : Colors.transparent,
+        borderRadius: BorderRadius.circular(12),
+        child: ListTile(
+          contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+          leading: Icon(icon, size: 23),
+          title: Text(
+            label,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+            ),
+          ),
+          selected: selected,
+          selectedColor: cs.primary,
+          onTap: onTap,
+        ),
+      ),
+    );
+    final top = Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Row(
+          children: [
+            BrandMark(size: 36),
+            SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                'Six Tick',
+                style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+              ),
             ),
           ],
+        ),
+        const SizedBox(height: 24),
+        destination(
+          t('验证码', 'Codes'),
+          Icons.grid_view_rounded,
+          page == 0 && activeFilter == 'all',
+          () => selectFilter('all'),
+        ),
+        destination(
+          t('收藏', 'Favorites'),
+          Icons.star_outline_rounded,
+          page == 0 && activeFilter == 'favorites',
+          () => selectFilter('favorites'),
+        ),
+        const SizedBox(height: 16),
+        Row(
+          children: [
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.only(left: 12),
+                child: Text(
+                  t('分组', 'Groups'),
+                  style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
+                ),
+              ),
+            ),
+            IconButton(
+              tooltip: t('管理分组', 'Manage groups'),
+              onPressed: () => run(groupMenu),
+              icon: const Icon(Icons.add, size: 18),
+            ),
+          ],
+        ),
+        for (final group in app.document!.groups)
+          destination(
+            group.fields['name'] as String,
+            Icons.folder_outlined,
+            page == 0 && activeFilter == group.id,
+            () => selectFilter(group.id),
+          ),
+        if (app.document!.groups.isEmpty)
+          TextButton(
+            onPressed: () => run(groupMenu),
+            child: Text(t('添加分组', 'Add a group')),
+          ),
+      ],
+    );
+    final bottom = Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const SizedBox(height: 32),
+        destination(
+          t('同步', 'Sync'),
+          Icons.sync_outlined,
+          page == 1,
+          () => setState(() => page = 1),
+        ),
+        destination(
+          t('设置', 'Settings'),
+          Icons.settings_outlined,
+          page == 2 || page == 3,
+          () => setState(() => page = 3),
+        ),
+        const Divider(height: 24),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(
+                app.cloud?.enabled == true
+                    ? Icons.cloud_done_outlined
+                    : Icons.wifi_off_outlined,
+                size: 20,
+                color: cs.onSurfaceVariant,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      app.cloud?.enabled == true
+                          ? t('加密同步', 'Encrypted sync')
+                          : app.cloud == null
+                          ? t('本地模式', 'Local mode')
+                          : t('同步已暂停', 'Sync paused'),
+                      style: const TextStyle(fontSize: 13),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      app.cloud != null
+                          ? t('离线仍可取码。', 'Codes work offline.')
+                          : t(
+                              '离线可用，数据仅存储在本地。',
+                              'Offline. Data stays on this device.',
+                            ),
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: cs.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        OutlinedButton.icon(
+          onPressed: app.lock,
+          icon: const Icon(Icons.lock_outline, size: 18),
+          label: Text(t('锁定', 'Lock')),
+        ),
+      ],
+    );
+    return Container(
+      width: 220,
+      decoration: BoxDecoration(
+        color: Theme.of(context).brightness == Brightness.dark
+            ? const Color(0xff101b2c)
+            : const Color(0xfff7fbff),
+        border: Border(right: BorderSide(color: cs.outlineVariant)),
+      ),
+      child: LayoutBuilder(
+        builder: (context, constraints) => SingleChildScrollView(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minHeight: constraints.maxHeight),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 24, 16, 16),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [top, bottom],
+              ),
+            ),
+          ),
         ),
       ),
     );
@@ -814,158 +1262,109 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final wide = MediaQuery.sizeOf(context).width >= 840;
-    final labels = [
-      t('验证码', 'Codes'),
-      t('同步与设备', 'Sync & devices'),
-      t('安全与备份', 'Security & backup'),
-      t('设置与帮助', 'Settings & help'),
-    ];
-    final icons = [
-      Icons.grid_view_rounded,
-      Icons.sync_outlined,
-      Icons.shield_outlined,
-      Icons.tune_rounded,
-    ];
     final content = switch (page) {
       1 => CloudPage(app: app),
-      2 => SecurityPage(app: app),
-      3 => SettingsPage(app: app),
-      _ => accounts(),
+      2 => Column(
+        children: [
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Padding(
+              padding: const EdgeInsets.only(left: 16, top: 8),
+              child: TextButton.icon(
+                onPressed: () => setState(() => page = 3),
+                icon: const Icon(Icons.arrow_back, size: 18),
+                label: Text(t('设置', 'Settings')),
+              ),
+            ),
+          ),
+          Expanded(child: SecurityPage(app: app)),
+        ],
+      ),
+      3 => SettingsPage(app: app, onSecurity: () => setState(() => page = 2)),
+      _ => accounts(wide),
     };
+    void focusSearch() {
+      setState(() => page = 0);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) searchFocus.requestFocus();
+      });
+    }
+
     return CallbackShortcuts(
       bindings: {
-        const SingleActivator(LogicalKeyboardKey.keyF, control: true): () {
-          setState(() => page = 0);
-          searchFocus.requestFocus();
-        },
-        const SingleActivator(LogicalKeyboardKey.keyF, meta: true): () {
-          setState(() => page = 0);
-          searchFocus.requestFocus();
-        },
+        const SingleActivator(LogicalKeyboardKey.keyF, control: true):
+            focusSearch,
+        const SingleActivator(LogicalKeyboardKey.keyF, meta: true): focusSearch,
       },
-      child: Scaffold(
-        appBar: wide
-            ? null
-            : AppBar(
-                title: const Text('Six Tick'),
-                actions: [
-                  IconButton(
-                    onPressed: app.lock,
-                    tooltip: t('锁定', 'Lock'),
-                    icon: const Icon(Icons.lock_outline),
+      child: Focus(
+        autofocus: true,
+        child: Scaffold(
+          appBar: wide
+              ? null
+              : AppBar(
+                  toolbarHeight: 64,
+                  title: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      BrandMark(size: 30),
+                      SizedBox(width: 10),
+                      Text('Six Tick', style: TextStyle(fontSize: 20)),
+                    ],
                   ),
-                ],
-              ),
-        body: SafeArea(
-          child: Row(
-            children: [
-              if (wide)
-                Container(
-                  width: 244,
-                  decoration: BoxDecoration(
-                    border: Border(
-                      right: BorderSide(
-                        color: Theme.of(context).colorScheme.outlineVariant,
-                      ),
+                  actions: [
+                    IconButton(
+                      onPressed: app.lock,
+                      tooltip: t('锁定', 'Lock'),
+                      icon: const Icon(Icons.lock_outline, size: 21),
                     ),
-                  ),
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(18, 32, 18, 18),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Row(
-                          children: [
-                            Icon(
-                              Icons.shield_outlined,
-                              size: 30,
-                              color: Theme.of(context).colorScheme.primary,
-                            ),
-                            const SizedBox(width: 10),
-                            const Expanded(
-                              child: FittedBox(
-                                fit: BoxFit.scaleDown,
-                                alignment: Alignment.centerLeft,
-                                child: Text(
-                                  'Six Tick',
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.w700,
-                                    fontSize: 25,
-                                    letterSpacing: -1,
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          t('你的私密验证器', 'Your private authenticator'),
-                          style: Theme.of(context).textTheme.bodySmall,
-                        ),
-                        const SizedBox(height: 40),
-                        ...List.generate(
-                          labels.length,
-                          (i) => Padding(
-                            padding: const EdgeInsets.only(bottom: 8),
-                            child: ListTile(
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              selected: page == i,
-                              selectedTileColor: Theme.of(context)
-                                  .colorScheme
-                                  .primaryContainer
-                                  .withValues(alpha: .5),
-                              leading: Icon(icons[i]),
-                              title: Text(labels[i]),
-                              onTap: () => setState(() => page = i),
-                            ),
-                          ),
-                        ),
-                        const Spacer(),
-                        ListTile(
-                          leading: Icon(
-                            app.cloud?.enabled == true
-                                ? Icons.cloud_done_outlined
-                                : Icons.wifi_off,
-                          ),
-                          title: Text(
-                            app.cloud?.enabled == true
-                                ? t('加密同步', 'Encrypted sync')
-                                : t('本地模式', 'Local mode'),
-                          ),
-                          subtitle: Text(
-                            t('安全，从你的设备开始', 'Security starts on your device'),
-                            style: const TextStyle(fontSize: 11),
-                          ),
-                        ),
-                        OutlinedButton.icon(
-                          onPressed: app.lock,
-                          icon: const Icon(Icons.lock_outline, size: 18),
-                          label: Text(t('锁定验证器', 'Lock authenticator')),
-                        ),
-                      ],
+                    const SizedBox(width: 4),
+                  ],
+                ),
+          body: SafeArea(
+            child: Row(
+              children: [
+                if (wide) sidebar(),
+                Expanded(
+                  child: Align(
+                    alignment: Alignment.topCenter,
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 1120),
+                      child: content,
                     ),
                   ),
                 ),
-              Expanded(child: content),
-            ],
+              ],
+            ),
           ),
-        ),
-        bottomNavigationBar: wide
-            ? null
-            : NavigationBar(
-                selectedIndex: page,
-                onDestinationSelected: (index) => setState(() => page = index),
-                destinations: List.generate(
-                  labels.length,
-                  (i) => NavigationDestination(
-                    icon: Icon(icons[i]),
-                    label: labels[i],
-                  ),
+          bottomNavigationBar: wide
+              ? null
+              : NavigationBar(
+                  animationDuration: MediaQuery.disableAnimationsOf(context)
+                      ? Duration.zero
+                      : const Duration(milliseconds: 180),
+                  selectedIndex: page == 0
+                      ? 0
+                      : page == 1
+                      ? 1
+                      : 2,
+                  onDestinationSelected: (index) =>
+                      setState(() => page = [0, 1, 3][index]),
+                  destinations: [
+                    NavigationDestination(
+                      icon: const Icon(Icons.grid_view_rounded),
+                      label: t('验证码', 'Codes'),
+                    ),
+                    NavigationDestination(
+                      icon: const Icon(Icons.sync_outlined),
+                      label: t('同步', 'Sync'),
+                    ),
+                    NavigationDestination(
+                      icon: const Icon(Icons.settings_outlined),
+                      label: t('设置', 'Settings'),
+                    ),
+                  ],
                 ),
-              ),
+        ),
       ),
     );
   }

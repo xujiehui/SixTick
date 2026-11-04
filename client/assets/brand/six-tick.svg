@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <title>Six Tick — Sky Blue</title>
+  <rect width="1024" height="1024" fill="#F7FBFF"/>
+  <g fill="none" stroke-width="104" stroke-linecap="round">
+  <path d="M 570.487274 258.663783 A 260 260 0 0 1 702.151962 334.680426" stroke="#60CAFF"/>
+  <path d="M 760.639237 435.983357 A 260 260 0 0 1 760.639237 588.016643" stroke="#0062FF"/>
+  <path d="M 702.151962 689.319574 A 260 260 0 0 1 570.487274 765.336217" stroke="#268FFF"/>
+  <path d="M 453.512726 765.336217 A 260 260 0 0 1 321.848038 689.319574" stroke="#0875FF"/>
+  <path d="M 263.360763 588.016643 A 260 260 0 0 1 263.360763 435.983357" stroke="#0062FF"/>
+  <path d="M 321.848038 334.680426 A 260 260 0 0 1 453.512726 258.663783" stroke="#0054E5"/>
+  </g>
+</svg>

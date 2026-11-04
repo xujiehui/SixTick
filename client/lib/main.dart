@@ -7,6 +7,7 @@ import 'package:window_manager/window_manager.dart';
 import 'services/controller.dart';
 import 'services/local_store.dart';
 import 'ui/gate.dart';
+import 'ui/design.dart';
 import 'ui/home.dart';
 
 Future<void> main() async {
@@ -47,7 +48,9 @@ class _SixTickAppState extends State<SixTickApp>
       if (call.method == 'systemLocked') app.lock();
     });
     idle = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (app.locked) return;
+      if (app.locked || (app.store.authenticating && backgroundAt == null)) {
+        return;
+      }
       final seconds = app.settings['lockSeconds'] as int;
       final since = backgroundAt ?? lastActivity;
       if (DateTime.now().difference(since).inMilliseconds >=
@@ -101,7 +104,7 @@ class _SixTickAppState extends State<SixTickApp>
 
   @override
   void onWindowBlur() {
-    backgroundAt ??= DateTime.now();
+    if (!app.store.authenticating) backgroundAt ??= DateTime.now();
     app.hide(true);
   }
 
@@ -130,64 +133,13 @@ class _SixTickAppState extends State<SixTickApp>
     super.dispose();
   }
 
-  ThemeData theme(Brightness brightness) {
-    final scheme = ColorScheme.fromSeed(
-      seedColor: const Color(0xff42634b),
-      brightness: brightness,
-    );
-    return ThemeData(
-      useMaterial3: true,
-      colorScheme: scheme,
-      brightness: brightness,
-      scaffoldBackgroundColor: brightness == Brightness.light
-          ? const Color(0xfff7f8f4)
-          : const Color(0xff111813),
-      appBarTheme: const AppBarTheme(centerTitle: false, elevation: 0),
-      cardTheme: CardThemeData(
-        elevation: 0,
-        color: scheme.surface,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(20),
-          side: BorderSide(color: scheme.outlineVariant.withValues(alpha: .6)),
-        ),
-      ),
-      inputDecorationTheme: InputDecorationTheme(
-        filled: true,
-        fillColor: scheme.surfaceContainerLowest,
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: scheme.outlineVariant),
-        ),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: scheme.outlineVariant),
-        ),
-      ),
-      filledButtonTheme: FilledButtonThemeData(
-        style: FilledButton.styleFrom(
-          padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 18),
-        ),
-      ),
-      textTheme: const TextTheme(
-        headlineLarge: TextStyle(
-          fontWeight: FontWeight.w700,
-          letterSpacing: -1.5,
-        ),
-        headlineSmall: TextStyle(
-          fontWeight: FontWeight.w600,
-          letterSpacing: -.5,
-        ),
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) => MaterialApp(
     title: 'Six Tick',
     debugShowCheckedModeBanner: false,
     navigatorKey: navigator,
-    theme: theme(Brightness.light),
-    darkTheme: theme(Brightness.dark),
+    theme: sixTickTheme(Brightness.light),
+    darkTheme: sixTickTheme(Brightness.dark),
     themeMode: switch (app.settings['theme']) {
       'light' => ThemeMode.light,
       'dark' => ThemeMode.dark,
@@ -206,13 +158,25 @@ class _SixTickAppState extends State<SixTickApp>
         },
         child: Stack(
           children: [
-            child!,
+            ExcludeSemantics(
+              excluding: app.privacyHidden,
+              child: ExcludeFocus(
+                excluding: app.privacyHidden,
+                child: AbsorbPointer(
+                  absorbing: app.privacyHidden,
+                  child: child!,
+                ),
+              ),
+            ),
             if (app.privacyHidden)
               Positioned.fill(
                 child: ColoredBox(
                   color: Theme.of(context).colorScheme.surface,
-                  child: const Center(
-                    child: Icon(Icons.shield_outlined, size: 64),
+                  child: Semantics(
+                    label: app.settings['language'] == 'en'
+                        ? 'Content hidden'
+                        : '内容已隐藏',
+                    child: const Center(child: BrandMark(size: 80)),
                   ),
                 ),
               ),

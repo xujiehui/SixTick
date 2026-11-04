@@ -17,6 +17,8 @@ class AppController extends ChangeNotifier {
     'language': 'zh',
     'lockSeconds': 60,
     'clearClipboard': true,
+    'accountSort': 'custom',
+    'accountOrder': <String>[],
   };
   String deviceId = uuid.v4(), syncStatus = 'disabled';
   DateTime? lastSync;
@@ -88,10 +90,10 @@ class AppController extends ChangeNotifier {
     _startPolling();
   }
 
-  Future<void> unlock({String? password}) async {
+  Future<void> unlock({String? password, bool biometric = false}) async {
     final generation = _generation;
     await _queue;
-    final plain = await store.unlock(password: password);
+    final plain = await store.unlock(password: password, biometric: biometric);
     if (generation != _generation) {
       store.lock();
       return;
@@ -139,6 +141,12 @@ class AppController extends ChangeNotifier {
     privacyHidden = value;
     notifyListeners();
   }
+
+  Future<void> setBiometricUnlock(bool enabled, String password) =>
+      serial(() async {
+        await store.setBiometricUnlock(enabled, password: password);
+        notifyListeners();
+      });
 
   void _startPolling() {
     _poll?.cancel();

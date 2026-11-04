@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import '../services/api.dart';
 import '../services/controller.dart';
+import 'design.dart';
 
 String tr(AppController app, String zh, String en) =>
     app.settings['language'] == 'en' ? en : zh;
@@ -58,6 +59,18 @@ String errorText(AppController app, Object error) {
     'local_key_missing': [
       '系统安全存储中的密钥不可用，请使用备份或云恢复。',
       'The local secure key is unavailable. Restore a backup or cloud vault.',
+    ],
+    'biometric_unavailable': [
+      'Touch ID 暂不可用，请使用本机密码，并检查系统中的指纹设置。',
+      'Touch ID is unavailable. Use your local password and check your fingerprint settings.',
+    ],
+    'biometric_key_unavailable': [
+      'Touch ID 密钥不可用，请使用本机密码解锁后重新启用 Touch ID。',
+      'The Touch ID key is unavailable. Unlock with your local password, then enable Touch ID again.',
+    ],
+    'biometric_signing_required': [
+      '当前应用版本无法访问 Touch ID 钥匙串，请安装已签名版本，或继续使用本机密码。',
+      'This build cannot access the Touch ID keychain. Install a signed build or continue with your local password.',
     ],
     'invalid_code': [
       '验证码错误、已过期或尝试次数过多。',
@@ -141,7 +154,7 @@ Future<bool> confirm(
 }) async =>
     await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (context) => AppDialog(
         title: Text(title),
         content: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 460),
@@ -150,7 +163,7 @@ Future<bool> confirm(
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
-            child: const Icon(Icons.close),
+            child: Text(MaterialLocalizations.of(context).cancelButtonLabel),
           ),
           FilledButton(
             style: danger
@@ -178,7 +191,7 @@ Future<String?> askText(
   final text = TextEditingController(text: initial);
   final result = await showDialog<String>(
     context: context,
-    builder: (context) => AlertDialog(
+    builder: (context) => AppDialog(
       title: Text(title),
       content: SizedBox(
         width: 420,
@@ -199,7 +212,7 @@ Future<String?> askText(
       actions: [
         TextButton(
           onPressed: () => Navigator.pop(context),
-          child: const Icon(Icons.close),
+          child: Text(MaterialLocalizations.of(context).cancelButtonLabel),
         ),
         FilledButton(
           onPressed: () => Navigator.pop(context, text.text),
@@ -217,6 +230,10 @@ Future<String?> askText(
 Future<bool> reauthenticate(BuildContext context, AppController app) async {
   String? password;
   if (!app.store.usesSystem) {
+    if (app.store.biometricEnabled) {
+      if (await app.store.reauthenticate()) return !app.locked;
+      if (!context.mounted || app.locked) return false;
+    }
     password = await askText(
       context,
       tr(app, '验证身份', 'Verify your identity'),
@@ -247,13 +264,24 @@ class SectionCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Card(
     child: Padding(
-      padding: const EdgeInsets.all(24),
+      padding: EdgeInsets.all(MediaQuery.sizeOf(context).width < 600 ? 16 : 24),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              Icon(icon, color: Theme.of(context).colorScheme.primary),
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.primaryContainer,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Icon(
+                  icon,
+                  color: Theme.of(context).colorScheme.primary,
+                  size: 22,
+                ),
+              ),
               const SizedBox(width: 12),
               Expanded(
                 child: Text(
@@ -264,8 +292,14 @@ class SectionCard extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 10),
-          Text(subtitle, style: Theme.of(context).textTheme.bodyMedium),
-          const SizedBox(height: 20),
+          Text(
+            subtitle,
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+              height: 1.5,
+            ),
+          ),
+          const SizedBox(height: 24),
           ...children,
         ],
       ),

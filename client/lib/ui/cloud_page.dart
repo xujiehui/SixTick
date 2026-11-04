@@ -7,6 +7,7 @@ import '../services/api.dart';
 import '../services/cloud.dart';
 import '../services/controller.dart';
 import 'common.dart';
+import 'design.dart';
 import 'add_account.dart';
 import 'security_page.dart';
 
@@ -175,7 +176,7 @@ class _CloudPageState extends State<CloudPage> {
     if (!mounted) return;
     final keep = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (context) => AppDialog(
         title: Text(t('退出云账号', 'Sign out')),
         content: Text(
           t(
@@ -251,28 +252,39 @@ class _CloudPageState extends State<CloudPage> {
       'error' => t('同步失败，本地仍可用', 'Sync failed — local codes still work'),
       _ => t('未开启', 'Disabled'),
     };
-    return ListView(
-      padding: const EdgeInsets.all(24),
+    return PageList(
       children: [
-        Text(
-          t('同步与设备', 'Sync & devices'),
-          style: Theme.of(context).textTheme.headlineLarge,
-        ),
-        const SizedBox(height: 8),
-        Text(
-          t(
+        PageHeading(
+          title: t('同步与设备', 'Sync & devices'),
+          subtitle: t(
             '你的设备相互连接，密钥始终由你掌握。',
             'Connect your devices. Keep your secrets yours.',
           ),
         ),
-        const SizedBox(height: 24),
+        StatusNotice(
+          text: status,
+          icon: app.syncStatus == 'synced'
+              ? Icons.cloud_done_outlined
+              : app.syncStatus == 'offline'
+              ? Icons.cloud_off_outlined
+              : Icons.sync_outlined,
+          tone: ['error', 'reauth'].contains(app.syncStatus)
+              ? NoticeTone.error
+              : ['offline', 'conflict'].contains(app.syncStatus)
+              ? NoticeTone.warning
+              : app.syncStatus == 'synced'
+              ? NoticeTone.success
+              : NoticeTone.neutral,
+        ),
+        const SizedBox(height: 16),
         if (busy) const LinearProgressIndicator(),
         if (error != null)
           Padding(
             padding: const EdgeInsets.only(bottom: 16),
-            child: Text(
-              error!,
-              style: TextStyle(color: Theme.of(context).colorScheme.error),
+            child: StatusNotice(
+              text: error!,
+              tone: NoticeTone.error,
+              icon: Icons.error_outline,
             ),
           ),
         SectionCard(
@@ -297,7 +309,6 @@ class _CloudPageState extends State<CloudPage> {
                 style: Theme.of(context).textTheme.titleMedium,
               ),
               const SizedBox(height: 8),
-              Text(status),
               if (app.lastSync != null)
                 Text(
                   '${t('最近同步', 'Last synced')}: ${app.lastSync!.toLocal().toString().substring(0, 19)}',
@@ -438,6 +449,9 @@ class _CloudPageState extends State<CloudPage> {
                     child: Text(t('退出账号', 'Sign out')),
                   ),
                   TextButton(
+                    style: TextButton.styleFrom(
+                      foregroundColor: Theme.of(context).colorScheme.error,
+                    ),
                     onPressed: busy ? null : () => run(deleteCloud),
                     child: Text(t('注销云账号', 'Delete cloud account')),
                   ),
@@ -635,7 +649,7 @@ class _CloudWizardState extends State<CloudWizard> {
   }
 
   @override
-  Widget build(BuildContext context) => AlertDialog(
+  Widget build(BuildContext context) => AppDialog(
     title: Text(
       t(
         widget.fresh ? '重新验证邮箱' : '连接你的设备',
@@ -649,6 +663,13 @@ class _CloudWizardState extends State<CloudWizard> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            FlowStep(
+              label: login == null
+                  ? t('验证邮箱', 'Verify email')
+                  : t('解锁加密仓库', 'Unlock your vault'),
+              current: login == null ? 1 : 2,
+              total: 2,
+            ),
             if (busy) const LinearProgressIndicator(),
             if (login == null) ...[
               Text(
@@ -667,7 +688,7 @@ class _CloudWizardState extends State<CloudWizard> {
                   hintText: 'https://…',
                 ),
               ),
-              const SizedBox(height: 14),
+              const SizedBox(height: 16),
               TextField(
                 controller: email,
                 enabled: !sent && !widget.fresh,
@@ -675,7 +696,7 @@ class _CloudWizardState extends State<CloudWizard> {
                 autocorrect: false,
                 decoration: InputDecoration(labelText: t('登录邮箱', 'Email')),
               ),
-              const SizedBox(height: 14),
+              const SizedBox(height: 16),
               OutlinedButton(
                 onPressed: busy ? null : () => run(send),
                 child: Text(
@@ -686,7 +707,7 @@ class _CloudWizardState extends State<CloudWizard> {
                 ),
               ),
               if (sent) ...[
-                const SizedBox(height: 14),
+                const SizedBox(height: 16),
                 TextField(
                   controller: code,
                   keyboardType: TextInputType.number,
@@ -803,9 +824,10 @@ class _CloudWizardState extends State<CloudWizard> {
             if (error != null)
               Padding(
                 padding: const EdgeInsets.only(top: 16),
-                child: Text(
-                  error!,
-                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                child: StatusNotice(
+                  text: error!,
+                  tone: NoticeTone.error,
+                  icon: Icons.error_outline,
                 ),
               ),
           ],

@@ -10,6 +10,7 @@ import '../core/document.dart';
 import '../core/totp.dart';
 import '../services/controller.dart';
 import 'common.dart';
+import 'design.dart';
 
 Future<void> copySensitive(String value) async {
   if (Platform.isIOS || Platform.isAndroid) {
@@ -62,7 +63,7 @@ class _RecoveryDialogState extends State<_RecoveryDialog> {
   @override
   Widget build(BuildContext context) {
     final app = widget.app;
-    return AlertDialog(
+    return AppDialog(
       title: Text(
         tr(
           app,
@@ -77,6 +78,15 @@ class _RecoveryDialogState extends State<_RecoveryDialog> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              FlowStep(
+                label: tr(
+                  app,
+                  check ? '核对恢复密钥' : '保存恢复密钥',
+                  check ? 'Verify your copy' : 'Save your recovery key',
+                ),
+                current: check ? 2 : 1,
+                total: 2,
+              ),
               Text(
                 tr(
                   app,
@@ -165,8 +175,35 @@ class SecurityPage extends StatefulWidget {
 
 class _SecurityPageState extends State<SecurityPage> {
   bool busy = false;
+  bool biometricAvailable = false;
   AppController get app => widget.app;
   String t(String zh, String en) => tr(app, zh, en);
+  @override
+  void initState() {
+    super.initState();
+    app.store.biometricAvailable().then((available) {
+      if (mounted) setState(() => biometricAvailable = available);
+    });
+  }
+
+  Future<void> changeBiometricUnlock(bool enabled) async {
+    final password = await askText(
+      context,
+      enabled
+          ? t('启用 Touch ID', 'Enable Touch ID')
+          : t('关闭 Touch ID', 'Disable Touch ID'),
+      t('本机解锁密码', 'Local unlock password'),
+      t('继续', 'Continue'),
+      secret: true,
+      helper: t(
+        '验证现有密码。启用后仍可使用此密码解锁。',
+        'Verify your existing password. It remains available after enabling Touch ID.',
+      ),
+    );
+    if (password == null || !mounted || app.locked) return;
+    await app.setBiometricUnlock(enabled, password);
+  }
+
   Future<void> run(Future<void> Function() work) async {
     if (busy) return;
     setState(() => busy = true);
@@ -298,7 +335,7 @@ class _SecurityPageState extends State<SecurityPage> {
     }
     final keep = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (context) => AppDialog(
         title: Text(t('确认合并导入', 'Confirm import')),
         content: Text(
           t(
@@ -333,21 +370,15 @@ class _SecurityPageState extends State<SecurityPage> {
   }
 
   @override
-  Widget build(BuildContext context) => ListView(
-    padding: const EdgeInsets.all(24),
+  Widget build(BuildContext context) => PageList(
     children: [
-      Text(
-        t('安全与备份', 'Security & backup'),
-        style: Theme.of(context).textTheme.headlineLarge,
-      ),
-      const SizedBox(height: 8),
-      Text(
-        t(
+      PageHeading(
+        title: t('安全与备份', 'Security & backup'),
+        subtitle: t(
           '为设备丢失、换机和意外做好准备。',
           'Be ready for a new device, a lost phone, or the unexpected.',
         ),
       ),
-      const SizedBox(height: 24),
       if (busy) const LinearProgressIndicator(),
       SectionCard(
         title: t('应用锁', 'App lock'),
@@ -356,7 +387,27 @@ class _SecurityPageState extends State<SecurityPage> {
             : t('使用独立的本机密码保护仓库。', 'Protected with your local unlock password.'),
         icon: Icons.lock_outline,
         children: [
+          if (!app.store.usesSystem &&
+              (biometricAvailable || app.store.biometricEnabled)) ...[
+            SwitchListTile.adaptive(
+              contentPadding: EdgeInsets.zero,
+              secondary: const Icon(Icons.fingerprint),
+              title: Text(t('使用 Touch ID 解锁', 'Unlock with Touch ID')),
+              subtitle: Text(
+                t(
+                  '使用这台 Mac 的指纹解锁，保留本机密码作为备用。指纹更改后需重新启用。',
+                  'Unlock with this Mac’s fingerprints and keep your local password as a fallback. Enable again after fingerprint changes.',
+                ),
+              ),
+              value: app.store.biometricEnabled,
+              onChanged: busy
+                  ? null
+                  : (value) => run(() => changeBiometricUnlock(value)),
+            ),
+            const SizedBox(height: 16),
+          ],
           DropdownButtonFormField<int>(
+            isExpanded: true,
             initialValue: app.settings['lockSeconds'] as int,
             decoration: InputDecoration(
               labelText: t('进入后台后的自动锁定时间', 'Auto-lock after backgrounding'),
@@ -442,7 +493,8 @@ class _SecurityPageState extends State<SecurityPage> {
 
 class SettingsPage extends StatelessWidget {
   final AppController app;
-  const SettingsPage({super.key, required this.app});
+  final VoidCallback onSecurity;
+  const SettingsPage({super.key, required this.app, required this.onSecurity});
   String t(String zh, String en) => tr(app, zh, en);
   @override
   Widget build(BuildContext context) {
@@ -512,20 +564,38 @@ class SettingsPage extends StatelessWidget {
         ),
       ],
     ];
-    return ListView(
-      padding: const EdgeInsets.all(24),
+    return PageList(
       children: [
-        Text(
-          t('设置与帮助', 'Settings & help'),
-          style: Theme.of(context).textTheme.headlineLarge,
+        PageHeading(
+          title: t('设置与帮助', 'Settings & help'),
+          subtitle: t('让 Six Tick 更适合你。', 'Make Six Tick feel like yours.'),
         ),
-        const SizedBox(height: 24),
+        Card(
+          child: ListTile(
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 24,
+              vertical: 8,
+            ),
+            leading: const Icon(Icons.shield_outlined),
+            title: Text(t('安全与备份', 'Security & backup')),
+            subtitle: Text(
+              t(
+                '应用锁、加密备份与剪贴板保护',
+                'App lock, encrypted backups and clipboard protection',
+              ),
+            ),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: onSecurity,
+          ),
+        ),
+        const SizedBox(height: 16),
         SectionCard(
           title: t('外观与语言', 'Appearance & language'),
           subtitle: t('设置只影响当前设备。', 'These preferences stay on this device.'),
           icon: Icons.tune,
           children: [
             DropdownButtonFormField<String>(
+              isExpanded: true,
               initialValue: app.settings['theme'] as String,
               decoration: InputDecoration(labelText: t('主题', 'Theme')),
               items: [
@@ -540,6 +610,7 @@ class SettingsPage extends StatelessWidget {
             ),
             const SizedBox(height: 16),
             DropdownButtonFormField<String>(
+              isExpanded: true,
               initialValue: app.settings['language'] as String,
               decoration: InputDecoration(labelText: t('语言', 'Language')),
               items: const [
@@ -551,16 +622,26 @@ class SettingsPage extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 16),
+        Text(
+          t('使用帮助', 'Help & guidance'),
+          style: Theme.of(context).textTheme.titleLarge,
+        ),
+        const SizedBox(height: 12),
         ...help.map(
-          (item) => Card(
-            child: ExpansionTile(
-              title: Text(item[0]),
-              childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
-              children: [Text(item[1])],
+          (item) => Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Card(
+              child: ExpansionTile(
+                title: Text(item[0]),
+                childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+                children: [Text(item[1])],
+              ),
             ),
           ),
         ),
         const SizedBox(height: 24),
+        const BrandMark(size: 40),
+        const SizedBox(height: 12),
         Text('Six Tick 1.0.0', style: Theme.of(context).textTheme.titleMedium),
         const SizedBox(height: 8),
         Text(

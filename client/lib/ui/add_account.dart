@@ -6,6 +6,7 @@ import '../core/totp.dart';
 import '../services/controller.dart';
 import '../services/qr.dart';
 import 'common.dart';
+import 'design.dart';
 
 Future<void> importQr(
   BuildContext context,
@@ -159,7 +160,7 @@ class _AddAccountDialogState extends State<AddAccountDialog> {
   }
 
   @override
-  Widget build(BuildContext context) => AlertDialog(
+  Widget build(BuildContext context) => AppDialog(
     title: Text(
       tr(
         app,
@@ -174,6 +175,19 @@ class _AddAccountDialogState extends State<AddAccountDialog> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            StatusNotice(
+              text: tr(
+                app,
+                widget.initial == null
+                    ? '从服务的两步验证设置中获取密钥，填写后保存。'
+                    : '请核对服务名称、账号和生成参数，然后保存。',
+                widget.initial == null
+                    ? 'Get the secret from your service’s two-step verification settings, then save it here.'
+                    : 'Check the service, account and code settings before saving.',
+              ),
+              icon: Icons.key_outlined,
+            ),
+            const SizedBox(height: 24),
             if (widget.initial == null) ...[
               TextField(
                 controller: uri,
@@ -213,14 +227,14 @@ class _AddAccountDialogState extends State<AddAccountDialog> {
                 labelText: tr(app, '服务名称', 'Service name'),
               ),
             ),
-            const SizedBox(height: 14),
+            const SizedBox(height: 16),
             TextField(
               controller: account,
               decoration: InputDecoration(
                 labelText: tr(app, '账号标识（可选）', 'Account label (optional)'),
               ),
             ),
-            const SizedBox(height: 14),
+            const SizedBox(height: 16),
             TextField(
               controller: secret,
               obscureText: !reveal,
@@ -235,8 +249,9 @@ class _AddAccountDialogState extends State<AddAccountDialog> {
                 ),
               ),
             ),
-            const SizedBox(height: 14),
+            const SizedBox(height: 16),
             DropdownButtonFormField<String>(
+              isExpanded: true,
               initialValue: group,
               decoration: InputDecoration(labelText: tr(app, '分组', 'Group')),
               items: [
@@ -273,10 +288,12 @@ class _AddAccountDialogState extends State<AddAccountDialog> {
               initiallyExpanded: advanced,
               tilePadding: EdgeInsets.zero,
               children: [
-                Row(
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Expanded(
+                    SizedBox(
                       child: DropdownButtonFormField<String>(
+                        isExpanded: true,
                         initialValue: algorithm,
                         items: ['SHA1', 'SHA256', 'SHA512']
                             .map(
@@ -287,9 +304,10 @@ class _AddAccountDialogState extends State<AddAccountDialog> {
                         decoration: const InputDecoration(labelText: 'HMAC'),
                       ),
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
+                    const SizedBox(height: 16),
+                    SizedBox(
                       child: DropdownButtonFormField<int>(
+                        isExpanded: true,
                         initialValue: digits,
                         items: [6, 8]
                             .map(
@@ -317,9 +335,10 @@ class _AddAccountDialogState extends State<AddAccountDialog> {
               ],
             ),
             if (error != null)
-              Text(
-                error!,
-                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              StatusNotice(
+                text: error!,
+                tone: NoticeTone.error,
+                icon: Icons.error_outline,
               ),
           ],
         ),
@@ -387,6 +406,43 @@ class _ScanScreenState extends State<_ScanScreen> {
     ),
     body: MobileScanner(
       controller: controller,
+      overlayBuilder: (context, constraints) => IgnorePointer(
+        child: Stack(
+          children: [
+            Center(
+              child: Container(
+                width: constraints.maxWidth * .7,
+                height: constraints.maxWidth * .7,
+                decoration: BoxDecoration(
+                  border: Border.all(color: Colors.white, width: 2),
+                  borderRadius: BorderRadius.circular(24),
+                ),
+              ),
+            ),
+            Positioned(
+              left: 24,
+              right: 24,
+              bottom: 32,
+              child: Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xdd0c1424),
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Text(
+                  tr(
+                    widget.app,
+                    '将二维码放入取景框，识别后核对信息。',
+                    'Place the QR code in the frame, then review its details.',
+                  ),
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: Colors.white),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
       onDetect: (capture) {
         final codes = capture.barcodes
             .map((b) => b.rawValue)
